@@ -18,7 +18,8 @@ baseline.csv (14×24)  ──hb_fit──►  24 点基线  ──hb_compare─�
 | `include/hb.h` | 公共 API：数据结构、函数声明 |
 | `src/hb.c` | 拟合、判定、时段合并、统计原语 |
 | `src/hb_cli.c` | `main()`：CSV 解析 + JSON 输出 |
-| `tests/test_hb.c` | 508 个单元断言 |
+| `tests/test_hb.c` | 567 个定点断言 |
+| `tests/test_props.c` | 随机化不变量测试（3000 组输入，232 万次检查） |
 | `tests/test_cli.sh` | CLI 集成测试（golden、错误码、无表头/注释/CRLF） |
 | `tests/fixtures/` | 14 天 × 24 小时夹具 + 期望输出 |
 | `tools/gen_fixtures.py` | 重建夹具（可选，不参与构建） |
@@ -41,7 +42,9 @@ baseline.csv (14×24)  ──hb_fit──►  24 点基线  ──hb_compare─�
 
 - 每个 `(day,hour)` 至多一行，重复即报错。
 - 缺行等价于 `wear=0`（缺失），但建议显式给出全部 336 行。
-- `day` 不要求连续；`days_present = max(day)+1`，取值范围 1..14。
+- `day` 不要求连续；`days_used = max(day)+1`，取值范围 1..14。
+- 字段两侧允许空格/制表符；单行上限 511 字符，超长行直接报错而不是被截断成两行。
+- 整数用 `strtol` 严格解析：溢出、`1.5` 这类小数、`10abc` 这类尾随字符都会被拒绝。
 - `wear=1` 必须由上游只在“该小时佩戴充分”时上报（例如 ≥45 分钟）。**部分佩戴不要写成低活动量**，否则基线会被系统性拉低。
 - `wear=0` 时 `activity` 被忽略，可以写 `0` 或留空。
 - `wear=1, activity=0` 是**有效观测**：戴了但没动。
@@ -62,7 +65,7 @@ baseline.csv (14×24)  ──hb_fit──►  24 点基线  ──hb_compare─�
 {
   "method": "hourly_personal_baseline_c_v1",
   "window_days": 14,
-  "days_present": 14,
+  "days_used": 14,
   "hour_count": 24,
   "floor": 29.4,
   "scale": 294.0,
@@ -71,6 +74,8 @@ baseline.csv (14×24)  ──hb_fit──►  24 点基线  ──hb_compare─�
   "blocks":   [ /* 连续时段 */ ]
 }
 ```
+
+- `window_days` 是固定窗口容量（14）；`days_used` 是本次实际参与拟合的天数（1..14）。
 
 `baseline[i]`：
 
@@ -89,7 +94,7 @@ baseline.csv (14×24)  ──hb_fit──►  24 点基线  ──hb_compare─�
 | `outer_low` `outer_high` | number\|null | 不寻常边界（P10–P90，必要时用 floor 加宽） |
 | `p_active` | number\|null | 非零天数占比 |
 | `active_level` | number\|null | 有活动时的中位强度 |
-| `rest_expected` | bool | 是否静息时段 |
+| `rest_expected` | bool | 是否静息时段；仅当 `band_available=true` 时有意义 |
 | `band_available` | bool | 是否有可用区间 |
 
 `today[i]`：
@@ -99,6 +104,7 @@ baseline.csv (14×24)  ──hb_fit──►  24 点基线  ──hb_compare─�
 | `hour` | int | 0..23 |
 | `value` | number\|null | 当天值；未佩戴为 null |
 | `state` | string | `no_data` / `no_baseline` / `normal` / `high` / `low` / `unusual_movement` |
+| `baseline_status` | string | 该小时基线的成熟度；`building` 时不要对外下结论 |
 | `z` | number\|null | 稳健强度，仅参考，不参与告警 |
 | `delta` | number\|null | `value - median` |
 | `expected` | number\|null | 该小时基线中位数 |
@@ -114,7 +120,7 @@ baseline.csv (14×24)  ──hb_fit──►  24 点基线  ──hb_compare─�
 | `state` | string | `high` / `low` / `unusual_movement` |
 | `total` | number | 时段内实际值合计 |
 | `expected` | number | 时段内基线中位数合计 |
-| `ratio` | number\|null | `total / expected`，`expected=0` 时为 null |
+| `ratio` | number\|null | `total / expected`；`expected=0` 或 `unusual_movement` 时为 null |
 | `text` | string | 可直接展示的句子 |
 
 ### 1.4 命令行

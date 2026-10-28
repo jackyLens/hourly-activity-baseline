@@ -71,7 +71,7 @@ typedef struct {
 
     double p_active;
     double active_level;
-    int rest_expected;
+    int rest_expected;   /* 仅当 has_stats=1 时有意义 */
     int band_available;
 } hb_hour;
 
@@ -81,7 +81,7 @@ typedef struct {
     double floor;
     double scale;
     int has_scale;
-    int window_days;
+    int days_used;  /* 实际参与拟合的天数（1..HB_WINDOW_DAYS） */
 } hb_baseline;
 
 typedef enum {
@@ -105,7 +105,8 @@ typedef struct {
     double delta;
     int has_expected;
     double expected;
-    const char *band_position; /* "below" / "inside" / "above" / "unknown" */
+    hb_status baseline_status;  /* 该小时基线的成熟度，供调用方决定是否对外下结论 */
+    const char *band_position;  /* "below" / "inside" / "above" / "unknown" */
     const char *reason;
 } hb_deviation;
 
@@ -127,7 +128,7 @@ void hb_config_default(hb_config *cfg);
 void hb_input_init(hb_input *in);
 
 /* 写入一个观测。成功返回 0；参数越界返回 -1。
- * wear=0 时 value 被忽略（可传 0）。 */
+ * wear=0 时 value 被忽略（可传 0）。重复写同一 (day,hour) 会覆盖。 */
 int hb_input_set(hb_input *in, int day, int hour, int wear, double value);
 
 /* ---- 计算 ---- */
@@ -139,7 +140,8 @@ int hb_fit(const hb_input *in, const hb_config *cfg, hb_baseline *out);
 hb_deviation hb_compare(const hb_baseline *b, const hb_config *cfg,
                         int hour, int has_value, double value);
 
-/* 把逐小时判定合并成连续时段，返回写入的块数；参数非法返回 -1。 */
+/* 把逐小时判定合并成连续时段，返回写入的块数；参数非法返回 -1。
+ * devs 必须按 hour 0..23 升序排列。 */
 int hb_summarize(const hb_deviation *devs, int n, hb_block *out, int max_blocks);
 
 /* ---- 名称与文本 ---- */
@@ -150,7 +152,7 @@ const char *hb_status_name(hb_status s);
 /* 生成可读文本（UTF-8）。成功返回 0；缓冲区不足返回 -1。 */
 int hb_block_text(const hb_block *blk, char *buf, size_t buflen);
 
-/* ---- 统计原语（为测试与复用暴露） ---- */
+/* ---- 统计原语（为测试与复用暴露；n 必须在 1..24） ---- */
 
 int hb_median(const double *v, int n, double *out);
 int hb_mad(const double *v, int n, double center, double *out);

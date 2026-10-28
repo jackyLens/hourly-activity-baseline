@@ -52,6 +52,12 @@ expect_rc 2 "$BIN" "$TMP/bad_wear.csv"
 printf 'day,hour,wear,activity\n0,0,1,-5\n' > "$TMP/bad_negative.csv"
 expect_rc 2 "$BIN" "$TMP/bad_negative.csv"
 
+# 字段两侧空白（CSV 常见写法）应得到相同结果
+sed 's/,/ , /g' tests/fixtures/baseline.csv > "$TMP/spaces.csv"
+sed 's/,/ , /g' tests/fixtures/today.csv > "$TMP/today_spaces.csv"
+"$BIN" "$TMP/spaces.csv" "$TMP/today_spaces.csv" > "$TMP/out6.json"
+diff -u tests/fixtures/expected_output.json "$TMP/out6.json" || fail "字段空白输入结果不一致"
+
 printf 'day,hour,wear,activity\n0,0,1,10abc\n' > "$TMP/extra.csv"
 expect_rc 2 "$BIN" "$TMP/extra.csv"
 
@@ -60,6 +66,21 @@ expect_rc 2 "$BIN" "$TMP/dup.csv"
 
 printf 'day,hour,wear,activity\n0,24,1,10\n' > "$TMP/bad_hour.csv"
 expect_rc 2 "$BIN" "$TMP/bad_hour.csv"
+
+printf 'day,hour,wear,activity\n999999999999999999999,0,1,10\n' > "$TMP/overflow.csv"
+expect_rc 2 "$BIN" "$TMP/overflow.csv"
+
+printf 'day,hour,wear,activity\n1.5,0,1,10\n' > "$TMP/fraction.csv"
+expect_rc 2 "$BIN" "$TMP/fraction.csv"
+
+printf 'day,hour,wear,activity\n0,0,1\n' > "$TMP/no_activity.csv"
+expect_rc 2 "$BIN" "$TMP/no_activity.csv"
+
+printf 'day,hour,wear,activity\n0,0,0,\n' > "$TMP/empty_activity.csv"
+expect_rc 0 "$BIN" "$TMP/empty_activity.csv"
+
+awk 'BEGIN{printf "day,hour,wear,activity\n0,0,1,"; for(i=0;i<2000;i++) printf "1"; printf "\n"}' > "$TMP/long_line.csv"
+expect_rc 2 "$BIN" "$TMP/long_line.csv"
 
 printf '' > "$TMP/empty.csv"
 expect_rc 2 "$BIN" "$TMP/empty.csv"

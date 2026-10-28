@@ -12,6 +12,7 @@
 
 #include "hb.h"
 
+#include <float.h>
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -51,7 +52,8 @@ int hb_median(const double *v, int n, double *out)
     if (n % 2 != 0) {
         *out = tmp[n / 2];
     } else {
-        *out = (tmp[n / 2 - 1] + tmp[n / 2]) / 2.0;
+        /* 分别除以 2 再相加，避免两个大数相加溢出成 inf。 */
+        *out = tmp[n / 2 - 1] / 2.0 + tmp[n / 2] / 2.0;
     }
     return 0;
 }
@@ -159,6 +161,13 @@ static int config_valid(const hb_config *cfg)
     if (cfg->outer_q_low > cfg->inner_q_low || cfg->inner_q_high > cfg->outer_q_high) {
         return 0;
     }
+    if (!isfinite(cfg->inner_q_low) || !isfinite(cfg->inner_q_high) ||
+        !isfinite(cfg->outer_q_low) || !isfinite(cfg->outer_q_high) ||
+        !isfinite(cfg->floor_ratio) || !isfinite(cfg->floor_min) ||
+        !isfinite(cfg->rest_p_active) || !isfinite(cfg->rest_level_ratio) ||
+        !isfinite(cfg->rest_signal_min)) {
+        return 0;
+    }
     if (cfg->floor_ratio < 0.0 || cfg->floor_min < 0.0 ||
         cfg->rest_level_ratio < 0.0 || cfg->rest_signal_min < 0.0) {
         return 0;
@@ -186,7 +195,7 @@ int hb_fit(const hb_input *in, const hb_config *cfg, hb_baseline *out)
     }
 
     memset(out, 0, sizeof(*out));
-    out->window_days = in->days;
+    out->days_used = in->days;
 
     /* 第一遍：收集每小时有效值，并算中位数。 */
     for (h = 0; h < HB_HOURS; h++) {
@@ -215,7 +224,7 @@ int hb_fit(const hb_input *in, const hb_config *cfg, hb_baseline *out)
 
         if (n < cfg->min_n_any) {
             hb->has_stats = 0;
-            hb->rest_expected = (n == 0) ? 1 : 0;
+            hb->rest_expected = 0; /* 没有基线就不声明静息 */
             continue;
         }
 
@@ -254,9 +263,15 @@ int hb_fit(const hb_input *in, const hb_config *cfg, hb_baseline *out)
     out->floor = cfg->floor_min;
     if (out->has_scale) {
         double f = cfg->floor_ratio * out->scale;
+        if (!isfinite(f)) {
+            return -1;
+        }
         if (f > out->floor) {
             out->floor = f;
         }
+    }
+    if (!isfinite(out->floor)) {
+        return -1;
     }
 
     /* 第二遍：分位区间、静息标记。 */
@@ -288,8 +303,19 @@ int hb_fit(const hb_input *in, const hb_config *cfg, hb_baseline *out)
         outer_low = (p10 < hb->median - out->floor) ? p10 : hb->median - out->floor;
         hb->inner_low = (inner_low < 0.0) ? 0.0 : inner_low;
         hb->outer_low = (outer_low < 0.0) ? 0.0 : outer_low;
-        hb->inner_high = (p75 > hb->median + out->floor) ? p75 : hb->median + out->floor;
-        hb->outer_high = (p90 > hb->median + out->floor) ? p90 : hb->median + out->floor;
+        {
+            /* 上沿可能溢出（极大的活动量），截到 DBL_MAX 以保持区间有限。 */
+            double inner_high = hb->median + out->floor;
+            double outer_high = hb->median + out->floor;
+            if (!isfinite(inner_high)) {
+                inner_high = DBL_MAX;
+            }
+            if (!isfinite(outer_high)) {
+                outer_high = DBL_MAX;
+            }
+            hb->inner_high = (p75 > inner_high) ? p75 : inner_high;
+            hb->outer_high = (p90 > outer_high) ? p90 : outer_high;
+        }
         hb->band_available = 1;
 
         if (hb->p_active < cfg->rest_p_active) {
@@ -319,12 +345,14 @@ hb_deviation hb_compare(const hb_baseline *b, const hb_config *cfg,
     dev.hour = hour;
     dev.band_position = "unknown";
     dev.state = HB_DEV_NO_DATA;
+    dev.baseline_status = HB_STATUS_INSUFFICIENT;
 
     if (b == NULL || cfg == NULL || hour < 0 || hour >= HB_HOURS) {
         dev.reason = "非法的 hour 或空指针。";
         return dev;
     }
     hb = &b->hours[hour];
+    dev.baseline_status = hb->status;
 
     if (!has_value || !isfinite(value)) {
         dev.reason = "这一小时没有佩戴数据，不做比较（不当作 0）。";
@@ -406,7 +434,9 @@ int hb_summarize(const hb_deviation *devs, int n, hb_block *out, int max_blocks)
                 last->n_hours++;
                 last->total += devs[i].value;
                 last->expected += expected;
-                last->has_ratio = (last->expected > 0.0) ? 1 : 0;
+                last->has_ratio = (last->state != HB_DEV_UNUSUAL_MOVEMENT &&
+                                   last->expected > 0.0 &&
+                                   isfinite(last->total) && isfinite(last->expected)) ? 1 : 0;
                 last->ratio = last->has_ratio ? last->total / last->expected : 0.0;
                 continue;
             }
@@ -422,7 +452,8 @@ int hb_summarize(const hb_deviation *devs, int n, hb_block *out, int max_blocks)
         blk->state = s;
         blk->total = devs[i].value;
         blk->expected = expected;
-        blk->has_ratio = (expected > 0.0) ? 1 : 0;
+        blk->has_ratio = (s != HB_DEV_UNUSUAL_MOVEMENT && expected > 0.0 &&
+                          isfinite(blk->total) && isfinite(expected)) ? 1 : 0;
         blk->ratio = blk->has_ratio ? blk->total / blk->expected : 0.0;
     }
     return count;

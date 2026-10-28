@@ -126,8 +126,10 @@ static void test_all_missing_hour(void)
     d = hb_compare(&b, &cfg, 3, 0, 0.0);
     CHECK(d.state == HB_DEV_NO_DATA);
     CHECK(d.has_value == 0);
+    CHECK(d.baseline_status == HB_STATUS_INSUFFICIENT);
     d = hb_compare(&b, &cfg, 3, 1, 120.0);
     CHECK(d.state == HB_DEV_NO_BASELINE);
+    CHECK(d.baseline_status == HB_STATUS_INSUFFICIENT);
 }
 
 static void test_floor_from_scale(void)
@@ -281,6 +283,7 @@ static void test_compare_states(void)
 
     d = hb_compare(&b, &cfg, 18, 1, 1000.0);
     CHECK(d.state == HB_DEV_HIGH);
+    CHECK(d.baseline_status == HB_STATUS_COMPARABLE);
     CHECK(d.has_z == 1);
     CHECK(d.has_delta == 1);
     CHECK(d.has_expected == 1);
@@ -323,6 +326,7 @@ static void test_rest_never_low(void)
     CHECK(d.state == HB_DEV_NORMAL);
     d = hb_compare(&b, &cfg, 3, 1, 500.0);
     CHECK(d.state == HB_DEV_UNUSUAL_MOVEMENT);
+    CHECK(d.baseline_status == HB_STATUS_COMPARABLE);
 }
 
 static void test_unusual_threshold(void)
@@ -435,6 +439,61 @@ static void test_blocks_break_on_normal_and_missing(void)
     CHECK(blocks[1].start_hour == 10);
 }
 
+static void test_extreme_values(void)
+{
+    hb_input in;
+    hb_baseline b;
+    hb_config cfg;
+    double vals[14];
+    int i;
+
+    hb_config_default(&cfg);
+    hb_input_init(&in);
+    for (i = 0; i < 14; i++) {
+        vals[i] = 1.7e308;
+    }
+    fill_hour(&in, 0, vals, 14);
+    CHECK(hb_fit(&in, &cfg, &b) == 0);
+    CHECK(isfinite(b.hours[0].median));
+    CHECK(isfinite(b.hours[0].inner_high));
+    CHECK(isfinite(b.hours[0].outer_high));
+    CHECK(b.hours[0].inner_high >= b.hours[0].median);
+    CHECK(b.hours[0].outer_high >= b.hours[0].inner_high);
+}
+
+static void test_unusual_ratio_null(void)
+{
+    hb_baseline b;
+    hb_config cfg;
+    hb_input in;
+    hb_deviation devs[HB_HOURS];
+    hb_block blocks[HB_HOURS];
+    double zero[14];
+    double day[14];
+    int nb;
+    int h;
+    int i;
+
+    hb_config_default(&cfg);
+    hb_input_init(&in);
+    for (i = 0; i < 14; i++) {
+        zero[i] = 0.0;
+        day[i] = 1000.0;
+    }
+    fill_hour(&in, 3, zero, 14);
+    fill_hour(&in, 12, day, 14);
+    CHECK(hb_fit(&in, &cfg, &b) == 0);
+    for (h = 0; h < HB_HOURS; h++) {
+        devs[h] = hb_compare(&b, &cfg, h, 0, 0.0);
+    }
+    devs[3] = hb_compare(&b, &cfg, 3, 1, 500.0);
+    nb = hb_summarize(devs, HB_HOURS, blocks, HB_HOURS);
+    CHECK(nb == 1);
+    CHECK(blocks[0].state == HB_DEV_UNUSUAL_MOVEMENT);
+    CHECK(blocks[0].has_ratio == 0); /* 静息时段的 ratio 没有意义 */
+    CHECK_NEAR(blocks[0].ratio, 0.0, 1e-12);
+}
+
 static void test_block_text(void)
 {
     hb_baseline b;
@@ -479,7 +538,7 @@ static void test_status_thresholds(void)
     CHECK(b.hours[0].status == HB_STATUS_INSUFFICIENT);
     CHECK(b.hours[1].status == HB_STATUS_BUILDING);
     CHECK(b.hours[2].status == HB_STATUS_COMPARABLE);
-    CHECK(b.window_days == 7);
+    CHECK(b.days_used == 7);
 }
 
 static void test_input_validation(void)
@@ -546,6 +605,14 @@ static void test_config_validation(void)
     hb_config_default(&cfg);
     cfg.rest_p_active = 1.5;
     CHECK(hb_fit(&in, &cfg, &b) == -1);
+
+    hb_config_default(&cfg);
+    cfg.floor_ratio = NAN;
+    CHECK(hb_fit(&in, &cfg, &b) == -1);
+
+    hb_config_default(&cfg);
+    cfg.inner_q_low = INFINITY;
+    CHECK(hb_fit(&in, &cfg, &b) == -1);
 }
 
 static void test_names(void)
@@ -571,6 +638,8 @@ int main(void)
     test_unusual_threshold();
     test_blocks_merge();
     test_blocks_break_on_normal_and_missing();
+    test_extreme_values();
+    test_unusual_ratio_null();
     test_block_text();
     test_status_thresholds();
     test_input_validation();

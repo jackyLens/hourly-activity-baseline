@@ -15,6 +15,8 @@
 #include "hb.h"
 
 #include <ctype.h>
+#include <errno.h>
+#include <limits.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -51,6 +53,127 @@ static int starts_like_data(const char *p)
     return isdigit((unsigned char)p[0]) || p[0] == '-' || p[0] == '+';
 }
 
+static const char *skip_ws(const char *p)
+{
+    while (*p == ' ' || *p == '\t') {
+        p++;
+    }
+    return p;
+}
+
+/* 严格整数解析：不依赖 sscanf 的溢出行为。 */
+static int parse_int(const char **pp, int *out)
+{
+    const char *p = skip_ws(*pp);
+    char *end = NULL;
+    long v;
+
+    if (*p == '\0' || *p == ',') {
+        return 0;
+    }
+    errno = 0;
+    v = strtol(p, &end, 10);
+    if (end == p || errno == ERANGE || v < INT_MIN || v > INT_MAX) {
+        return 0;
+    }
+    *out = (int)v;
+    *pp = end;
+    return 1;
+}
+
+static int parse_double(const char **pp, double *out)
+{
+    const char *p = skip_ws(*pp);
+    char *end = NULL;
+    double v;
+
+    if (*p == '\0' || *p == ',') {
+        return 0;
+    }
+    v = strtod(p, &end);
+    if (end == p) {
+        return 0;
+    }
+    *out = v;
+    *pp = end;
+    return 1;
+}
+
+/* 返回 1 表示整行符合 day,hour,wear[,activity]；允许字段两侧空白与空 activity。 */
+static int parse_baseline_row(const char *line, int *day, int *hour, int *wear,
+                              int *has_activity, double *activity)
+{
+    const char *p = line;
+
+    *has_activity = 0;
+    *activity = 0.0;
+    if (!parse_int(&p, day)) {
+        return 0;
+    }
+    p = skip_ws(p);
+    if (*p != ',') {
+        return 0;
+    }
+    p++;
+    if (!parse_int(&p, hour)) {
+        return 0;
+    }
+    p = skip_ws(p);
+    if (*p != ',') {
+        return 0;
+    }
+    p++;
+    if (!parse_int(&p, wear)) {
+        return 0;
+    }
+    p = skip_ws(p);
+    if (*p == ',') {
+        p++;
+        p = skip_ws(p);
+        if (*p != '\0') {
+            if (!parse_double(&p, activity)) {
+                return 0;
+            }
+            *has_activity = 1;
+        }
+    }
+    p = skip_ws(p);
+    return *p == '\0';
+}
+
+static int parse_today_row(const char *line, int *hour, int *wear,
+                           int *has_activity, double *activity)
+{
+    const char *p = line;
+
+    *has_activity = 0;
+    *activity = 0.0;
+    if (!parse_int(&p, hour)) {
+        return 0;
+    }
+    p = skip_ws(p);
+    if (*p != ',') {
+        return 0;
+    }
+    p++;
+    if (!parse_int(&p, wear)) {
+        return 0;
+    }
+    p = skip_ws(p);
+    if (*p == ',') {
+        p++;
+        p = skip_ws(p);
+        if (*p != '\0') {
+            if (!parse_double(&p, activity)) {
+                return 0;
+            }
+            *has_activity = 1;
+        }
+    }
+    p = skip_ws(p);
+    return *p == '\0';
+}
+
 static int read_baseline(const char *path, hb_input *in, char *err, size_t errlen)
 {
     FILE *f;
@@ -73,11 +196,19 @@ static int read_baseline(const char *path, hb_input *in, char *err, size_t errle
         int day;
         int hour;
         int wear;
-        int k;
-        char extra = 0;
+        int has_activity;
         double val = 0.0;
 
         lineno++;
+        if (strchr(line, '\n') == NULL && !feof(f)) {
+            int ch;
+            while ((ch = fgetc(f)) != EOF && ch != '\n') {
+                /* 丢弃超长行剩余部分 */
+            }
+            (void)snprintf(err, errlen, "第 %d 行过长（超过 %d 字符）", lineno, MAX_LINE - 1);
+            fclose(f);
+            return -1;
+        }
         strip_eol(line);
         p = line;
         while (*p == ' ' || *p == '\t') {
@@ -96,14 +227,9 @@ static int read_baseline(const char *path, hb_input *in, char *err, size_t errle
             return -1;
         }
 
-        k = sscanf(p, "%d,%d,%d,%lf %c", &day, &hour, &wear, &val, &extra);
-        if (k == 5) {
-            (void)snprintf(err, errlen, "第 %d 行存在多余字符", lineno);
-            fclose(f);
-            return -1;
-        }
-        if (k < 3) {
-            (void)snprintf(err, errlen, "第 %d 行字段不足（需要 day,hour,wear,activity）", lineno);
+        if (!parse_baseline_row(p, &day, &hour, &wear, &has_activity, &val)) {
+            (void)snprintf(err, errlen,
+                           "第 %d 行格式非法（需要 day,hour,wear,activity）", lineno);
             fclose(f);
             return -1;
         }
@@ -124,7 +250,12 @@ static int read_baseline(const char *path, hb_input *in, char *err, size_t errle
             fclose(f);
             return -1;
         }
-        if (wear == 1 && (k < 4 || !isfinite(val) || val < 0.0)) {
+        if (wear == 1 && !has_activity) {
+            (void)snprintf(err, errlen, "第 %d 行 wear=1 缺少 activity", lineno);
+            fclose(f);
+            return -1;
+        }
+        if (wear == 1 && (!isfinite(val) || val < 0.0)) {
             (void)snprintf(err, errlen, "第 %d 行 wear=1 需要非负且有限的 activity", lineno);
             fclose(f);
             return -1;
@@ -141,6 +272,11 @@ static int read_baseline(const char *path, hb_input *in, char *err, size_t errle
             return -1;
         }
         rows++;
+    }
+    if (ferror(f)) {
+        (void)snprintf(err, errlen, "读取 %s 时出错", path);
+        fclose(f);
+        return -1;
     }
     fclose(f);
 
@@ -177,11 +313,19 @@ static int read_today(const char *path, int has[HB_HOURS], double val[HB_HOURS],
         char *p;
         int hour;
         int wear;
-        int k;
-        char extra = 0;
+        int has_activity;
         double v = 0.0;
 
         lineno++;
+        if (strchr(line, '\n') == NULL && !feof(f)) {
+            int ch;
+            while ((ch = fgetc(f)) != EOF && ch != '\n') {
+                /* 丢弃超长行剩余部分 */
+            }
+            (void)snprintf(err, errlen, "第 %d 行过长（超过 %d 字符）", lineno, MAX_LINE - 1);
+            fclose(f);
+            return -1;
+        }
         strip_eol(line);
         p = line;
         while (*p == ' ' || *p == '\t') {
@@ -200,14 +344,9 @@ static int read_today(const char *path, int has[HB_HOURS], double val[HB_HOURS],
             return -1;
         }
 
-        k = sscanf(p, "%d,%d,%lf %c", &hour, &wear, &v, &extra);
-        if (k == 4) {
-            (void)snprintf(err, errlen, "第 %d 行存在多余字符", lineno);
-            fclose(f);
-            return -1;
-        }
-        if (k < 2) {
-            (void)snprintf(err, errlen, "第 %d 行字段不足（需要 hour,wear,activity）", lineno);
+        if (!parse_today_row(p, &hour, &wear, &has_activity, &v)) {
+            (void)snprintf(err, errlen,
+                           "第 %d 行格式非法（需要 hour,wear,activity）", lineno);
             fclose(f);
             return -1;
         }
@@ -222,7 +361,12 @@ static int read_today(const char *path, int has[HB_HOURS], double val[HB_HOURS],
             fclose(f);
             return -1;
         }
-        if (wear == 1 && (k < 3 || !isfinite(v) || v < 0.0)) {
+        if (wear == 1 && !has_activity) {
+            (void)snprintf(err, errlen, "第 %d 行 wear=1 缺少 activity", lineno);
+            fclose(f);
+            return -1;
+        }
+        if (wear == 1 && (!isfinite(v) || v < 0.0)) {
             (void)snprintf(err, errlen, "第 %d 行 wear=1 需要非负且有限的 activity", lineno);
             fclose(f);
             return -1;
@@ -236,6 +380,11 @@ static int read_today(const char *path, int has[HB_HOURS], double val[HB_HOURS],
         has[hour] = wear;
         val[hour] = (wear == 1) ? v : 0.0;
         rows++;
+    }
+    if (ferror(f)) {
+        (void)snprintf(err, errlen, "读取 %s 时出错", path);
+        fclose(f);
+        return -1;
     }
     fclose(f);
 
@@ -252,6 +401,10 @@ static void jnum(FILE *f, int has, double v, int prec)
 {
     if (!has) {
         fputs("null", f);
+        return;
+    }
+    if (!isfinite(v)) {
+        fputs("null", f); /* 防御：溢出或非有限值时保持 JSON 合法 */
         return;
     }
     if (v == 0.0) {
@@ -324,7 +477,7 @@ static void write_hour(FILE *f, const hb_hour *h)
     fputc('}', f);
 }
 
-static void write_json(FILE *f, const hb_input *in, const hb_baseline *b,
+static void write_json(FILE *f, const hb_baseline *b,
                        const hb_deviation *devs, int have_today,
                        const hb_block *blocks, int nblocks)
 {
@@ -332,8 +485,8 @@ static void write_json(FILE *f, const hb_input *in, const hb_baseline *b,
 
     fputs("{\n", f);
     fputs("  \"method\": \"hourly_personal_baseline_c_v1\",\n", f);
-    fprintf(f, "  \"window_days\": %d,\n", b->window_days);
-    fprintf(f, "  \"days_present\": %d,\n", in->days);
+    fprintf(f, "  \"window_days\": %d,\n", HB_WINDOW_DAYS);
+    fprintf(f, "  \"days_used\": %d,\n", b->days_used);
     fprintf(f, "  \"hour_count\": %d,\n", HB_HOURS);
     fputs("  \"floor\": ", f);
     jnum(f, 1, b->floor, 1);
@@ -361,6 +514,8 @@ static void write_json(FILE *f, const hb_input *in, const hb_baseline *b,
             jnum(f, d->has_value, d->value, 1);
             fputs(", \"state\": ", f);
             jstr(f, hb_state_name(d->state));
+            fputs(", \"baseline_status\": ", f);
+            jstr(f, hb_status_name(d->baseline_status));
             fputs(", \"z\": ", f);
             jnum(f, d->has_z, d->z, 2);
             fputs(", \"delta\": ", f);
@@ -496,8 +651,15 @@ int main(int argc, char **argv)
         }
     }
 
-    write_json(out, &in, &b, devs, have_today, blocks, nb);
+    write_json(out, &b, devs, have_today, blocks, nb);
 
+    if (fflush(out) != 0 || ferror(out)) {
+        fprintf(stderr, "写入输出时出错\n");
+        if (out != stdout) {
+            fclose(out);
+        }
+        return 3;
+    }
     if (out != stdout) {
         fclose(out);
     }
