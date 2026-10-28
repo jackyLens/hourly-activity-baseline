@@ -52,6 +52,9 @@ expect_rc 2 "$BIN" "$TMP/bad_wear.csv"
 printf 'day,hour,wear,activity\n0,0,1,-5\n' > "$TMP/bad_negative.csv"
 expect_rc 2 "$BIN" "$TMP/bad_negative.csv"
 
+printf 'day,hour,wear,activity\n0,0,1,10abc\n' > "$TMP/extra.csv"
+expect_rc 2 "$BIN" "$TMP/extra.csv"
+
 printf 'day,hour,wear,activity\n0,0,1,10\n0,0,1,20\n' > "$TMP/dup.csv"
 expect_rc 2 "$BIN" "$TMP/dup.csv"
 

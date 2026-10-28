@@ -74,6 +74,7 @@ static int read_baseline(const char *path, hb_input *in, char *err, size_t errle
         int hour;
         int wear;
         int k;
+        char extra = 0;
         double val = 0.0;
 
         lineno++;
@@ -95,7 +96,12 @@ static int read_baseline(const char *path, hb_input *in, char *err, size_t errle
             return -1;
         }
 
-        k = sscanf(p, "%d,%d,%d,%lf", &day, &hour, &wear, &val);
+        k = sscanf(p, "%d,%d,%d,%lf %c", &day, &hour, &wear, &val, &extra);
+        if (k == 5) {
+            (void)snprintf(err, errlen, "第 %d 行存在多余字符", lineno);
+            fclose(f);
+            return -1;
+        }
         if (k < 3) {
             (void)snprintf(err, errlen, "第 %d 行字段不足（需要 day,hour,wear,activity）", lineno);
             fclose(f);
@@ -172,6 +178,7 @@ static int read_today(const char *path, int has[HB_HOURS], double val[HB_HOURS],
         int hour;
         int wear;
         int k;
+        char extra = 0;
         double v = 0.0;
 
         lineno++;
@@ -193,7 +200,12 @@ static int read_today(const char *path, int has[HB_HOURS], double val[HB_HOURS],
             return -1;
         }
 
-        k = sscanf(p, "%d,%d,%lf", &hour, &wear, &v);
+        k = sscanf(p, "%d,%d,%lf %c", &hour, &wear, &v, &extra);
+        if (k == 4) {
+            (void)snprintf(err, errlen, "第 %d 行存在多余字符", lineno);
+            fclose(f);
+            return -1;
+        }
         if (k < 2) {
             (void)snprintf(err, errlen, "第 %d 行字段不足（需要 hour,wear,activity）", lineno);
             fclose(f);

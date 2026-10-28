@@ -31,7 +31,7 @@ make test       # 单元测试 + CLI 集成测试
 make test-asan  # ASan/UBSan 下重跑单元测试
 ```
 
-当前结果：`508 checks, 0 failure(s)`，CLI 集成测试覆盖 6 类错误输入与 3 类合法变体。
+当前结果：`508 checks, 0 failure(s)`，CLI 集成测试覆盖 7 类错误输入与 3 类合法变体。
 
 ---
 
