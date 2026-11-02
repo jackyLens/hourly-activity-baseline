@@ -1,5 +1,7 @@
 {
-  "method": "hourly_personal_baseline_c_v1",
+  "method": "evobeing_hourly_baseline",
+  "version": "1.0.0",
+  "author": "zhenghuimin",
   "window_days": 14,
   "days_used": 14,
   "hour_count": 24,
